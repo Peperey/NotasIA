@@ -10,7 +10,7 @@ import java.net.URL
 // Si un modelo deja de funcionar, mira la lista actual en console.groq.com/docs/models
 const val BASE = "https://api.groq.com/openai/v1"
 const val STT_MODEL = "whisper-large-v3-turbo"
-const val LLM_MODEL = "openai/gpt-oss-120b"
+const val LLM_MODEL = "llama-3.3-70b-versatile"
 
 data class Task(val text: String, val done: Boolean)
 data class Note(

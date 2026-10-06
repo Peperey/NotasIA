@@ -48,7 +48,6 @@ val Ink = Color(0xFF2B2B2B)
 val Muted = Color(0xFF777777)
 val ChipBg = Color(0xFFEDE7F6)
 val RedErr = Color(0xFFC62828)
-const val LOOSE_ID = 1L
 
 fun fmt(ms: Long): String = SimpleDateFormat("d MMM · HH:mm", Locale("es")).format(Date(ms))
 
@@ -112,10 +111,7 @@ fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-fun Detail(
-    n: Note, back: () -> Unit, toggle: (Int) -> Unit,
-    addTask: (String) -> Unit, removeTask: (Int) -> Unit, delete: () -> Unit
-) {
+fun Detail(n: Note, back: () -> Unit, toggle: (Int) -> Unit, delete: () -> Unit) {
     var confirm by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -132,25 +128,17 @@ fun Detail(
             Text(fmt(n.created), color = Muted, fontSize = 13.sp)
         }
         Section("Resumen") { Text(n.summary, color = Ink) }
-        Section("Tareas") {
-            n.tasks.forEachIndexed { i, t ->
-                Row(Modifier.clickable { toggle(i) }, verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = t.done, onCheckedChange = { toggle(i) })
-                    Text(
-                        t.text, color = if (t.done) Muted else Ink,
-                        textDecoration = if (t.done) TextDecoration.LineThrough else null,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text("✕", color = Muted, modifier = Modifier.clickable { removeTask(i) }.padding(8.dp))
+        if (n.tasks.isNotEmpty()) {
+            Section("Tareas") {
+                n.tasks.forEachIndexed { i, t ->
+                    Row(Modifier.clickable { toggle(i) }, verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = t.done, onCheckedChange = { toggle(i) })
+                        Text(
+                            t.text, color = if (t.done) Muted else Ink,
+                            textDecoration = if (t.done) TextDecoration.LineThrough else null
+                        )
+                    }
                 }
-            }
-            var newT by remember { mutableStateOf("") }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = newT, onValueChange = { newT = it }, singleLine = true,
-                    placeholder = { Text("Nueva tarea") }, modifier = Modifier.weight(1f)
-                )
-                TextButton(onClick = { addTask(newT); newT = "" }, enabled = newT.isNotBlank()) { Text("Añadir") }
             }
         }
         Section("Transcripción") { Text(n.transcript, color = Muted) }
@@ -184,9 +172,6 @@ fun App(prefs: SharedPreferences) {
     var pending by remember { mutableStateOf<File?>(null) }
     var digestText by remember { mutableStateOf<String?>(null) }
     var digestLoading by remember { mutableStateOf(false) }
-    var newTask by remember { mutableStateOf("") }
-    var showText by remember { mutableStateOf(false) }
-    var textInput by remember { mutableStateOf("") }
 
     BackHandler(enabled = openId != null) { openId = null }
 
@@ -273,73 +258,6 @@ fun App(prefs: SharedPreferences) {
         Store.save(ctx, notes)
     }
 
-    fun addTask(id: Long, text: String) {
-        val t = text.trim()
-        val p = notes.indexOfFirst { it.id == id }
-        if (t.isEmpty() || p < 0) return
-        notes[p] = notes[p].copy(tasks = notes[p].tasks + Task(t, false))
-        Store.save(ctx, notes)
-    }
-
-    fun removeTask(id: Long, idx: Int) {
-        val p = notes.indexOfFirst { it.id == id }
-        if (p < 0) return
-        notes[p] = notes[p].copy(tasks = notes[p].tasks.filterIndexed { i, _ -> i != idx })
-        Store.save(ctx, notes)
-    }
-
-    fun addLoose(text: String) {
-        val t = text.trim()
-        if (t.isEmpty()) return
-        if (notes.any { it.id == LOOSE_ID }) {
-            addTask(LOOSE_ID, t)
-        } else {
-            notes.add(
-                Note(
-                    LOOSE_ID, "Tareas sueltas", "Tareas añadidas a mano.", "Tareas", "",
-                    listOf(Task(t, false)), System.currentTimeMillis()
-                )
-            )
-            Store.save(ctx, notes)
-        }
-    }
-
-    fun processText(text: String) {
-        val t = text.trim()
-        if (t.isEmpty()) return
-        status = "Organizando…"
-        error = ""
-        scope.launch {
-            try {
-                val cats = notes.map { it.category }.distinct()
-                val o = withContext(Dispatchers.IO) { organize(key, t, cats) }
-                val now = System.currentTimeMillis()
-                val n = Note(now, o.title, o.summary, o.category, t, o.tasks.map { Task(it, false) }, now)
-                notes.add(0, n)
-                Store.save(ctx, notes)
-                textInput = ""
-                showText = false
-                openId = n.id
-            } catch (e: Exception) {
-                error = e.message ?: "Error"
-            }
-            status = ""
-        }
-    }
-
-    fun saveRaw(text: String) {
-        val t = text.trim()
-        if (t.isEmpty()) return
-        val now = System.currentTimeMillis()
-        val n = Note(now, t.lineSequence().first().take(40), t.take(200), "Sin categoría", t, emptyList(), now)
-        notes.add(0, n)
-        Store.save(ctx, notes)
-        textInput = ""
-        showText = false
-        error = ""
-        openId = n.id
-    }
-
     fun makeDigest() {
         digestText = ""
         digestLoading = true
@@ -359,8 +277,6 @@ fun App(prefs: SharedPreferences) {
             Detail(
                 current, back = { openId = null },
                 toggle = { idx -> toggle(current.id, idx) },
-                addTask = { addTask(current.id, it) },
-                removeTask = { idx -> removeTask(current.id, idx) },
                 delete = {
                     notes.removeAll { it.id == current.id }
                     Store.save(ctx, notes)
@@ -410,19 +326,6 @@ fun App(prefs: SharedPreferences) {
                         }
                     }
                 } else {
-                    Row(
-                        Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = newTask, onValueChange = { newTask = it }, singleLine = true,
-                            placeholder = { Text("Nueva tarea") }, modifier = Modifier.weight(1f)
-                        )
-                        TextButton(
-                            onClick = { addLoose(newTask); newTask = "" },
-                            enabled = newTask.isNotBlank()
-                        ) { Text("Añadir") }
-                    }
                     if (pendingTasks.isEmpty()) {
                         Text("No tienes tareas pendientes. 🎉", color = Muted, modifier = Modifier.weight(1f).padding(24.dp))
                     } else {
@@ -464,60 +367,16 @@ fun App(prefs: SharedPreferences) {
                         }
                     }
                     Spacer(Modifier.height(6.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(24.dp)
-                    ) {
-                        Box(
-                            Modifier.size(52.dp).clip(CircleShape).background(ChipBg)
-                                .clickable(enabled = status.isEmpty() && !recording) { showText = true },
-                            contentAlignment = Alignment.Center
-                        ) { Text("✏️", fontSize = 22.sp) }
-                        Box(
-                            Modifier.size(72.dp).clip(CircleShape)
-                                .background(if (recording) RedErr else Purple)
-                                .clickable(enabled = status.isEmpty()) { onMic() },
-                            contentAlignment = Alignment.Center
-                        ) { Text(if (recording) "⏹" else "🎙", fontSize = 30.sp) }
-                        Spacer(Modifier.size(52.dp))
-                    }
+                    Box(
+                        Modifier.size(72.dp).clip(CircleShape)
+                            .background(if (recording) RedErr else Purple)
+                            .clickable(enabled = status.isEmpty()) { onMic() },
+                        contentAlignment = Alignment.Center
+                    ) { Text(if (recording) "⏹" else "🎙", fontSize = 30.sp) }
                     Text(if (recording) "Toca para terminar" else "Toca y habla", color = Muted, fontSize = 12.sp)
                 }
             }
         }
-    }
-
-    if (showText) {
-        AlertDialog(
-            onDismissRequest = { if (status.isEmpty()) { showText = false; error = "" } },
-            title = { Text("Nueva nota de texto") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = textInput, onValueChange = { textInput = it },
-                        placeholder = { Text("Escribe tu nota…") },
-                        minLines = 4, modifier = Modifier.fillMaxWidth()
-                    )
-                    if (status.isNotEmpty()) Text(status, color = Muted)
-                    if (error.isNotEmpty()) {
-                        Text(error, color = RedErr, fontSize = 13.sp)
-                        TextButton(onClick = { saveRaw(textInput) }) { Text("Guardar sin IA") }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { if (key.isEmpty()) showKey = true else processText(textInput) },
-                    enabled = textInput.isNotBlank() && status.isEmpty()
-                ) { Text("Guardar") }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showText = false; error = "" },
-                    enabled = status.isEmpty()
-                ) { Text("Cancelar") }
-            }
-        )
     }
 
     if (showKey) {
