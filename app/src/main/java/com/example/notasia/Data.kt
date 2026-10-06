@@ -176,3 +176,10 @@ fun digest(key: String, notes: List<Note>): String {
         "No inventes nada."
     return chat(key, system, notes.take(30).joinToString("\n") { noteLine(it) }, false)
 }
+
+fun notesToJson(notes: List<Note>): String = JSONArray(notes.map { it.toJson() }).toString(2)
+
+fun notesFromJson(text: String): List<Note> {
+    val arr = JSONArray(text)
+    return (0 until arr.length()).map { noteFrom(arr.getJSONObject(it)) }
+}

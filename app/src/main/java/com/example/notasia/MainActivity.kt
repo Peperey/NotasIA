@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -39,6 +40,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -50,6 +52,9 @@ val Muted = Color(0xFF777777)
 val ChipBg = Color(0xFFEDE7F6)
 val RedErr = Color(0xFFC62828)
 const val LOOSE_ID = 1L
+
+fun norm(s: String): String =
+    Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
 
 fun fmt(ms: Long): String = SimpleDateFormat("d MMM · HH:mm", Locale("es")).format(Date(ms))
 
@@ -115,15 +120,48 @@ fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
 @Composable
 fun Detail(
     n: Note, back: () -> Unit, toggle: (Int) -> Unit,
-    addTask: (String) -> Unit, removeTask: (Int) -> Unit, delete: () -> Unit
+    addTask: (String) -> Unit, removeTask: (Int) -> Unit,
+    onEdit: (String, String, String, String) -> Unit, delete: () -> Unit
 ) {
     var confirm by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
+    var eTitle by remember(editing) { mutableStateOf(n.title) }
+    var eCat by remember(editing) { mutableStateOf(n.category) }
+    var eSum by remember(editing) { mutableStateOf(n.summary) }
+    var eText by remember(editing) { mutableStateOf(n.transcript) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("←", fontSize = 26.sp, color = Ink, modifier = Modifier.clickable { back() })
-        Text(n.title, color = Ink, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("←", fontSize = 26.sp, color = Ink, modifier = Modifier.clickable { back() })
+            Spacer(Modifier.weight(1f))
+            if (!editing) TextButton(onClick = { editing = true }) { Text("✎ Editar") }
+        }
+        if (editing) {
+            OutlinedTextField(
+                value = eTitle, onValueChange = { eTitle = it }, singleLine = true,
+                label = { Text("Título") }, modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = eCat, onValueChange = { eCat = it }, singleLine = true,
+                label = { Text("Categoría") }, modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = eSum, onValueChange = { eSum = it }, minLines = 2,
+                label = { Text("Resumen") }, modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = eText, onValueChange = { eText = it }, minLines = 4,
+                label = { Text("Texto de la nota") }, modifier = Modifier.fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onEdit(eTitle, eCat, eSum, eText); editing = false }) { Text("Guardar cambios") }
+                TextButton(onClick = { editing = false }) { Text("Cancelar") }
+            }
+        } else {
+            Text(n.title, color = Ink, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 n.category, color = Purple, fontSize = 13.sp,
@@ -132,7 +170,7 @@ fun Detail(
             )
             Text(fmt(n.created), color = Muted, fontSize = 13.sp)
         }
-        Section("Resumen") { Text(n.summary, color = Ink) }
+        if (!editing) Section("Resumen") { Text(n.summary, color = Ink) }
         Section("Tareas") {
             n.tasks.forEachIndexed { i, t ->
                 Row(Modifier.clickable { toggle(i) }, verticalAlignment = Alignment.CenterVertically) {
@@ -154,7 +192,7 @@ fun Detail(
                 TextButton(onClick = { addTask(newT); newT = "" }, enabled = newT.isNotBlank()) { Text("Añadir") }
             }
         }
-        Section("Transcripción") { Text(n.transcript, color = Muted) }
+        if (!editing) Section("Transcripción") { Text(n.transcript, color = Muted) }
         TextButton(onClick = { confirm = true }) { Text("Eliminar nota", color = RedErr) }
     }
     if (confirm) {
@@ -275,6 +313,8 @@ fun App(prefs: SharedPreferences) {
     var textInput by remember { mutableStateOf("") }
     var showAsk by remember { mutableStateOf(false) }
     var askLoading by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var showBackup by remember { mutableStateOf(false) }
     val askMsgs = remember { mutableStateListOf<Pair<Boolean, String>>() }
 
     BackHandler(enabled = openId != null) { openId = null }
@@ -402,6 +442,19 @@ fun App(prefs: SharedPreferences) {
         error = ""
     }
 
+    fun updateNote(id: Long, title: String, category: String, summary: String, text: String) {
+        val p = notes.indexOfFirst { it.id == id }
+        if (p < 0) return
+        val n = notes[p]
+        notes[p] = n.copy(
+            title = title.trim().ifBlank { n.title },
+            category = category.trim().ifBlank { "General" },
+            summary = summary.trim(),
+            transcript = text.trim()
+        )
+        Store.save(ctx, notes)
+    }
+
     fun toggle(id: Long, idx: Int) {
         val p = notes.indexOfFirst { it.id == id }
         if (p < 0) return
@@ -490,6 +543,36 @@ fun App(prefs: SharedPreferences) {
         }
     }
 
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) {
+            try {
+                ctx.contentResolver.openOutputStream(uri)?.use { it.write(notesToJson(notes.toList()).toByteArray()) }
+                Toast.makeText(ctx, "Respaldo guardado (" + notes.size + " notas)", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(ctx, "No se pudo guardar: " + e.message, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            try {
+                val text = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } ?: ""
+                val incoming = notesFromJson(text)
+                val have = notes.map { it.id }.toSet()
+                val fresh = incoming.filter { it.id !in have }
+                if (fresh.isNotEmpty()) {
+                    val merged = (notes.toList() + fresh).sortedByDescending { it.created }
+                    notes.clear()
+                    notes.addAll(merged)
+                    Store.save(ctx, notes)
+                }
+                Toast.makeText(ctx, "Importadas " + fresh.size + " notas nuevas", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(ctx, "Archivo no válido: " + e.message, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     BackHandler(enabled = showAsk) { closeAsk() }
 
     Box(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
@@ -507,6 +590,7 @@ fun App(prefs: SharedPreferences) {
                 toggle = { idx -> toggle(current.id, idx) },
                 addTask = { addTask(current.id, it) },
                 removeTask = { idx -> removeTask(current.id, idx) },
+                onEdit = { t, c, sm, tx -> updateNote(current.id, t, c, sm, tx) },
                 delete = {
                     notes.removeAll { it.id == current.id }
                     Store.save(ctx, notes)
@@ -516,7 +600,14 @@ fun App(prefs: SharedPreferences) {
         } else {
             val cats = notes.map { it.category }.distinct()
             val f = if (filter == "Todas" || cats.contains(filter)) filter else "Todas"
-            val shown = notes.filter { f == "Todas" || it.category == f }
+            val q = norm(query.trim())
+            val shown = notes.filter { n ->
+                (f == "Todas" || n.category == f) &&
+                    (q.isEmpty() || norm(
+                        n.title + " " + n.summary + " " + n.category + " " + n.transcript + " " +
+                            n.tasks.joinToString(" ") { it.text }
+                    ).contains(q))
+            }
             val pendingTasks = notes.flatMap { n ->
                 n.tasks.mapIndexedNotNull { i, t -> if (!t.done) Triple(n, i, t) else null }
             }
@@ -532,11 +623,24 @@ fun App(prefs: SharedPreferences) {
                     if (notes.isNotEmpty() && key.isNotEmpty()) {
                         Text("✨", fontSize = 24.sp, modifier = Modifier.clickable { makeDigest() }.padding(8.dp))
                     }
+                    Text("💾", fontSize = 22.sp, modifier = Modifier.clickable { showBackup = true }.padding(8.dp))
                     Text("🔑", fontSize = 22.sp, modifier = Modifier.clickable { keyInput = key; showKey = true }.padding(8.dp))
                 }
                 Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Pill("Notas", tab == 0) { tab = 0 }
                     Pill("Tareas (${pendingTasks.size})", tab == 1) { tab = 1 }
+                }
+                if (tab == 0) {
+                    OutlinedTextField(
+                        value = query, onValueChange = { query = it }, singleLine = true,
+                        placeholder = { Text("Buscar en tus notas") },
+                        trailingIcon = {
+                            if (query.isNotEmpty()) {
+                                Text("✕", color = Muted, modifier = Modifier.clickable { query = "" }.padding(12.dp))
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
                 }
                 if (tab == 0 && cats.isNotEmpty()) {
                     LazyRow(
@@ -550,7 +654,7 @@ fun App(prefs: SharedPreferences) {
                 if (tab == 0) {
                     if (shown.isEmpty()) {
                         Text(
-                            "Aún no hay notas. Toca el micrófono y cuéntame lo que quieras guardar.",
+                            if (notes.isEmpty()) "Aún no hay notas. Toca el micrófono y cuéntame lo que quieras guardar." else "No encontré notas con esa búsqueda.",
                             color = Muted, modifier = Modifier.weight(1f).padding(24.dp)
                         )
                     } else {
@@ -643,6 +747,32 @@ fun App(prefs: SharedPreferences) {
                 }
             }
         }
+    }
+
+    if (showBackup) {
+        AlertDialog(
+            onDismissRequest = { showBackup = false },
+            title = { Text("💾 Respaldo de notas") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Guarda tus notas en un archivo para no perderlas, o recupéralas desde uno. " +
+                            "No incluye tu clave de Groq.",
+                        color = Muted
+                    )
+                    Button(
+                        onClick = { showBackup = false; exportLauncher.launch("notas-ia-respaldo.json") },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Exportar notas") }
+                    OutlinedButton(
+                        onClick = { showBackup = false; importLauncher.launch(arrayOf("*/*")) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Importar notas") }
+                    Text("Al importar, solo se añaden las notas que no tengas ya.", color = Muted, fontSize = 12.sp)
+                }
+            },
+            confirmButton = { TextButton(onClick = { showBackup = false }) { Text("Cerrar") } }
+        )
     }
 
     if (showText) {
