@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -167,6 +168,91 @@ fun Detail(
 }
 
 @Composable
+fun AskScreen(
+    msgs: List<Pair<Boolean, String>>, loading: Boolean, status: String, error: String,
+    recording: Boolean, onSend: (String) -> Unit, onMic: () -> Unit, onClear: () -> Unit, back: () -> Unit
+) {
+    var input by remember { mutableStateOf("") }
+    val list = rememberLazyListState()
+    LaunchedEffect(msgs.size, loading) { if (msgs.isNotEmpty()) list.animateScrollToItem(msgs.size - 1) }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("←", fontSize = 26.sp, color = Ink, modifier = Modifier.clickable { back() }.padding(end = 12.dp))
+            Text(
+                "Pregúntale a tus notas", color = Purple, fontSize = 20.sp,
+                fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f)
+            )
+            if (msgs.isNotEmpty()) {
+                Text("🗑", fontSize = 20.sp, modifier = Modifier.clickable { onClear() }.padding(8.dp))
+            }
+        }
+        if (msgs.isEmpty()) {
+            Column(Modifier.weight(1f).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Pregunta lo que quieras sobre tus notas. Por ejemplo:", color = Muted)
+                listOf(
+                    "¿Qué tengo pendiente?",
+                    "Resume mis notas de esta semana",
+                    "¿Qué categorías tengo y de qué trata cada una?"
+                ).forEach { q ->
+                    Text(
+                        q, color = Purple,
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(ChipBg)
+                            .clickable { onSend(q) }.padding(12.dp)
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                Modifier.weight(1f), state = list, contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(msgs.size) { i ->
+                    val (mine, text) = msgs[i]
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start
+                    ) {
+                        Text(
+                            text, color = if (mine) Color.White else Ink,
+                            modifier = Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(16.dp))
+                                .background(if (mine) Purple else Color.White).padding(12.dp)
+                        )
+                    }
+                }
+            }
+        }
+        if (loading || status.isNotEmpty()) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(if (status.isNotEmpty()) status else "Pensando…", color = Muted)
+            }
+        }
+        if (error.isNotEmpty()) Text(error, color = RedErr, modifier = Modifier.padding(horizontal = 16.dp))
+        Row(
+            Modifier.fillMaxWidth().background(Color.White).padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f),
+                placeholder = { Text(if (recording) "Escuchando…" else "Escribe tu pregunta") }
+            )
+            Spacer(Modifier.width(8.dp))
+            Box(
+                Modifier.size(48.dp).clip(CircleShape).background(if (recording) RedErr else ChipBg)
+                    .clickable(enabled = !loading && status.isEmpty()) { onMic() },
+                contentAlignment = Alignment.Center
+            ) { Text(if (recording) "⏹" else "🎙", fontSize = 20.sp) }
+            Spacer(Modifier.width(6.dp))
+            Button(
+                onClick = { onSend(input); input = "" },
+                enabled = input.isNotBlank() && !loading && !recording
+            ) { Text("➤") }
+        }
+    }
+}
+
+@Composable
 fun App(prefs: SharedPreferences) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -187,6 +273,9 @@ fun App(prefs: SharedPreferences) {
     var newTask by remember { mutableStateOf("") }
     var showText by remember { mutableStateOf(false) }
     var textInput by remember { mutableStateOf("") }
+    var showAsk by remember { mutableStateOf(false) }
+    var askLoading by remember { mutableStateOf(false) }
+    val askMsgs = remember { mutableStateListOf<Pair<Boolean, String>>() }
 
     BackHandler(enabled = openId != null) { openId = null }
 
@@ -212,6 +301,41 @@ fun App(prefs: SharedPreferences) {
                 pending = file
             }
             status = ""
+        }
+    }
+
+    fun ask(q: String) {
+        val t = q.trim()
+        if (t.isEmpty() || askLoading) return
+        askMsgs.add(true to t)
+        askLoading = true
+        error = ""
+        scope.launch {
+            try {
+                val r = withContext(Dispatchers.IO) { askNotes(key, notes.toList(), askMsgs.toList()) }
+                askMsgs.add(false to r.trim())
+            } catch (e: Exception) {
+                error = e.message ?: "Error"
+            }
+            askLoading = false
+        }
+    }
+
+    fun processAsk(file: File) {
+        status = "Transcribiendo…"
+        error = ""
+        scope.launch {
+            try {
+                val q = withContext(Dispatchers.IO) { transcribe(key, file) }
+                status = ""
+                if (q.isBlank()) throw Exception("No se escuchó nada. Intenta de nuevo.")
+                ask(q)
+            } catch (e: Exception) {
+                status = ""
+                error = e.message ?: "Error"
+            }
+            file.delete()
+            pending = null
         }
     }
 
@@ -244,7 +368,7 @@ fun App(prefs: SharedPreferences) {
         try { r?.stop() } catch (e: Exception) { }
         r?.release()
         if (f != null && f.exists() && f.length() > 1000) {
-            process(f)
+            if (showAsk) processAsk(f) else process(f)
         } else {
             error = "La grabación fue muy corta."
             pending = null
@@ -263,6 +387,19 @@ fun App(prefs: SharedPreferences) {
         } else {
             perm.launch(Manifest.permission.RECORD_AUDIO)
         }
+    }
+
+    fun closeAsk() {
+        if (recording) {
+            try { recorder?.stop() } catch (e: Exception) { }
+            recorder?.release()
+            recorder = null
+            recording = false
+            pending?.delete()
+            pending = null
+        }
+        showAsk = false
+        error = ""
     }
 
     fun toggle(id: Long, idx: Int) {
@@ -353,9 +490,18 @@ fun App(prefs: SharedPreferences) {
         }
     }
 
+    BackHandler(enabled = showAsk) { closeAsk() }
+
     Box(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         val current = notes.firstOrNull { it.id == openId }
-        if (current != null) {
+        if (showAsk) {
+            AskScreen(
+                askMsgs, askLoading, status, error, recording,
+                onSend = { ask(it) }, onMic = { onMic() },
+                onClear = { askMsgs.clear(); error = "" },
+                back = { closeAsk() }
+            )
+        } else if (current != null) {
             Detail(
                 current, back = { openId = null },
                 toggle = { idx -> toggle(current.id, idx) },
@@ -377,6 +523,12 @@ fun App(prefs: SharedPreferences) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Notas IA", color = Purple, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
+                    Text(
+                        "💬", fontSize = 22.sp,
+                        modifier = Modifier.clickable {
+                            if (key.isEmpty()) showKey = true else { error = ""; showAsk = true }
+                        }.padding(8.dp)
+                    )
                     if (notes.isNotEmpty() && key.isNotEmpty()) {
                         Text("✨", fontSize = 24.sp, modifier = Modifier.clickable { makeDigest() }.padding(8.dp))
                     }
@@ -479,9 +631,15 @@ fun App(prefs: SharedPreferences) {
                                 .clickable(enabled = status.isEmpty()) { onMic() },
                             contentAlignment = Alignment.Center
                         ) { Text(if (recording) "⏹" else "🎙", fontSize = 30.sp) }
-                        Spacer(Modifier.size(52.dp))
+                        Box(
+                            Modifier.size(52.dp).clip(CircleShape).background(ChipBg)
+                                .clickable(enabled = status.isEmpty() && !recording) {
+                                    if (key.isEmpty()) showKey = true else { error = ""; showAsk = true }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) { Text("💬", fontSize = 22.sp) }
                     }
-                    Text(if (recording) "Toca para terminar" else "Toca y habla", color = Muted, fontSize = 12.sp)
+                    Text(if (recording) "Toca para terminar" else "Escribir   ·   Hablar   ·   Preguntar", color = Muted, fontSize = 12.sp)
                 }
             }
         }

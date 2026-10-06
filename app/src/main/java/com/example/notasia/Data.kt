@@ -88,14 +88,7 @@ fun transcribe(key: String, file: File): String {
     }
 }
 
-fun chat(key: String, system: String, user: String, json: Boolean): String {
-    val body = JSONObject().put("model", LLM_MODEL).put("temperature", 0.2)
-        .put(
-            "messages", JSONArray()
-                .put(JSONObject().put("role", "system").put("content", system))
-                .put(JSONObject().put("role", "user").put("content", user))
-        )
-    if (json) body.put("response_format", JSONObject().put("type", "json_object"))
+private fun post(key: String, body: JSONObject): String {
     val c = URL("$BASE/chat/completions").openConnection() as HttpURLConnection
     try {
         c.requestMethod = "POST"
@@ -110,6 +103,41 @@ fun chat(key: String, system: String, user: String, json: Boolean): String {
     } finally {
         c.disconnect()
     }
+}
+
+fun chat(key: String, system: String, user: String, json: Boolean): String {
+    val body = JSONObject().put("model", LLM_MODEL).put("temperature", 0.2)
+        .put(
+            "messages", JSONArray()
+                .put(JSONObject().put("role", "system").put("content", system))
+                .put(JSONObject().put("role", "user").put("content", user))
+        )
+    if (json) body.put("response_format", JSONObject().put("type", "json_object"))
+    return post(key, body)
+}
+
+fun askNotes(key: String, notes: List<Note>, history: List<Pair<Boolean, String>>): String {
+    val sb = StringBuilder()
+    var used = 0
+    for (n in notes) {
+        val tasks = if (n.tasks.isEmpty()) "" else
+            "Tareas: " + n.tasks.joinToString("; ") { (if (it.done) "[hecha] " else "[pendiente] ") + it.text } + "\n"
+        val block = "## ${n.title} [${n.category}] (${fmt(n.created)})\n" +
+            "Resumen: ${n.summary}\n" + tasks + "Texto: ${n.transcript.take(400)}\n\n"
+        if (sb.length + block.length > 14000) break
+        sb.append(block)
+        used++
+    }
+    val system = "Eres el asistente de las notas personales del usuario. Responde en español, breve y claro, " +
+        "usando SOLO la información de sus notas. Si la respuesta no está en las notas, dilo. No inventes. " +
+        "Hoy es ${fmt(System.currentTimeMillis())}. Se incluyen $used de ${notes.size} notas (las más recientes); " +
+        "si la pregunta podría depender de notas más antiguas, menciónalo.\n\nNOTAS:\n$sb"
+    val messages = JSONArray().put(JSONObject().put("role", "system").put("content", system))
+    history.takeLast(10).forEach { (isUser, text) ->
+        messages.put(JSONObject().put("role", if (isUser) "user" else "assistant").put("content", text))
+    }
+    val body = JSONObject().put("model", LLM_MODEL).put("temperature", 0.2).put("messages", messages)
+    return post(key, body)
 }
 
 fun organize(key: String, text: String, cats: List<String>): Organized {
