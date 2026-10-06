@@ -128,10 +128,15 @@ fun askNotes(key: String, notes: List<Note>, history: List<Pair<Boolean, String>
         sb.append(block)
         used++
     }
-    val system = "Eres el asistente de las notas personales del usuario. Responde en español, breve y claro, " +
-        "usando SOLO la información de sus notas. Si la respuesta no está en las notas, dilo. No inventes. " +
+    val system = "Eres el asistente de las notas personales del usuario. Responde en español, breve y claro. " +
+        "Si la respuesta está en sus notas, respóndela usando SOLO lo que dicen y empieza con 'Según tus notas:'. " +
+        "Si NO está en sus notas y es una pregunta de conocimiento general, empieza con " +
+        "'No está en tus notas, pero en general:' y responde con tu conocimiento; si no estás seguro de un dato, dilo. " +
+        "Nunca presentes conocimiento general como si estuviera en sus notas. " +
+        "Si la pregunta es sobre las cosas del propio usuario (sus tareas, sus pendientes, lo que anotó) y no aparece, " +
+        "di que no lo encuentras en sus notas y no inventes. " +
         "Hoy es ${fmt(System.currentTimeMillis())}. Se incluyen $used de ${notes.size} notas (las más recientes); " +
-        "si la pregunta podría depender de notas más antiguas, menciónalo.\n\nNOTAS:\n$sb"
+        "si la respuesta podría estar en notas más antiguas, menciónalo.\n\nNOTAS:\n$sb"
     val messages = JSONArray().put(JSONObject().put("role", "system").put("content", system))
     history.takeLast(10).forEach { (isUser, text) ->
         messages.put(JSONObject().put("role", if (isUser) "user" else "assistant").put("content", text))
