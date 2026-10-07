@@ -244,13 +244,13 @@ fun readImage(key: String, file: File): String {
     var last: Exception? = null
     for (m in VISION_MODELS) {
         try {
-            val body = JSONObject().put("model", m).put("temperature", 0.1)
+            val body = JSONObject().put("model", m).put("temperature", 0.1).put("max_tokens", 600)
                 .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
             val raw = post(key, body)
             return Regex("(?s)<think>.*?</think>").replace(raw, "").trim()
         } catch (e: Exception) {
             last = e
-            if (e.message?.startsWith("Error 404") != true) throw e
+            if (e.message?.startsWith("Error 404") != true && e.message?.startsWith("Error 429") != true) throw e
         }
     }
     throw last ?: Exception("No hay modelo de visión disponible")
