@@ -193,8 +193,8 @@ fun notesFromJson(text: String): List<Note> {
     return (0 until arr.length()).map { noteFrom(arr.getJSONObject(it)) }
 }
 
-// Modelo de visión de Groq. Si deja de funcionar, cambia este nombre (ver console.groq.com/docs/vision).
-const val VISION_MODEL = "qwen/qwen3.6-27b"
+// Modelos de visión de Groq, en orden de prueba. Si uno falla con 404 se prueba el siguiente (ver console.groq.com/docs/vision).
+val VISION_MODELS = listOf("qwen/qwen3.6-27b", "qwen/qwen3.8-27b")
 
 fun saveImage(ctx: Context, uri: Uri): String? {
     return try {
@@ -241,8 +241,17 @@ fun readImage(key: String, file: File): String {
             JSONObject().put("type", "image_url")
                 .put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$b64"))
         )
-    val body = JSONObject().put("model", VISION_MODEL).put("temperature", 0.1)
-        .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
-    val raw = post(key, body)
-    return Regex("(?s)<think>.*?</think>").replace(raw, "").trim()
+    var last: Exception? = null
+    for (m in VISION_MODELS) {
+        try {
+            val body = JSONObject().put("model", m).put("temperature", 0.1)
+                .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
+            val raw = post(key, body)
+            return Regex("(?s)<think>.*?</think>").replace(raw, "").trim()
+        } catch (e: Exception) {
+            last = e
+            if (e.message?.startsWith("Error 404") != true) throw e
+        }
+    }
+    throw last ?: Exception("No hay modelo de visión disponible")
 }

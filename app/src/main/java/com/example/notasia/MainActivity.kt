@@ -563,6 +563,9 @@ fun App(prefs: SharedPreferences, shared: String?, onSharedUsed: () -> Unit) {
                     fail = e.message ?: "Error"
                 }
             }
+            if (text.isBlank() && fail != null) {
+                note = note.copy(summary = "No pude leer el texto de la foto: " + fail)
+            }
             notes.add(0, note)
             Store.save(ctx, notes)
             status = ""
