@@ -194,7 +194,7 @@ fun notesFromJson(text: String): List<Note> {
 }
 
 // Modelo de visión de Groq. Si deja de funcionar, cambia este nombre (ver console.groq.com/docs/vision).
-const val VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+const val VISION_MODEL = "qwen/qwen3.6-27b"
 
 fun saveImage(ctx: Context, uri: Uri): String? {
     return try {
@@ -243,5 +243,6 @@ fun readImage(key: String, file: File): String {
         )
     val body = JSONObject().put("model", VISION_MODEL).put("temperature", 0.1)
         .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
-    return post(key, body)
+    val raw = post(key, body)
+    return Regex("(?s)<think>.*?</think>").replace(raw, "").trim()
 }
