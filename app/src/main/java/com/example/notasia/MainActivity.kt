@@ -2,7 +2,10 @@ package com.example.notasia
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import android.os.Build
@@ -13,6 +16,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -26,10 +30,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -63,12 +70,29 @@ fun newRecorder(ctx: Context): MediaRecorder =
     if (Build.VERSION.SDK_INT >= 31) MediaRecorder(ctx) else MediaRecorder()
 
 class MainActivity : ComponentActivity() {
+    private var shared by mutableStateOf<String?>(null)
+
+    private fun readShare(i: Intent?) {
+        if (i != null && i.action == Intent.ACTION_SEND && i.type == "text/plain") {
+            shared = i.getStringExtra(Intent.EXTRA_TEXT)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        readShare(intent)
         val prefs = getSharedPreferences("p", MODE_PRIVATE)
         setContent {
-            MaterialTheme(colorScheme = lightColorScheme(primary = Purple)) { App(prefs) }
+            MaterialTheme(colorScheme = lightColorScheme(primary = Purple)) {
+                App(prefs, shared) { shared = null }
+            }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readShare(intent)
     }
 }
 
@@ -102,6 +126,7 @@ fun NoteCard(n: Note, onClick: () -> Unit) {
             )
             val pend = n.tasks.count { !it.done }
             if (pend > 0) Text("☐ $pend pendiente" + if (pend > 1) "s" else "", color = Muted, fontSize = 12.sp)
+            if (n.images.isNotEmpty()) Text("🖼 " + n.images.size, color = Muted, fontSize = 12.sp)
         }
     }
 }
@@ -118,10 +143,26 @@ fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
+fun NoteImage(ctx: Context, name: String) {
+    val bmp = remember(name) {
+        BitmapFactory.decodeFile(File(File(ctx.filesDir, "images"), name).path)?.asImageBitmap()
+    }
+    if (bmp != null) {
+        Image(
+            bitmap = bmp, contentDescription = null, contentScale = ContentScale.FillWidth,
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+        )
+    } else {
+        Text("(La foto no está en este teléfono)", color = Muted, fontSize = 12.sp)
+    }
+}
+
+@Composable
 fun Detail(
     n: Note, back: () -> Unit, toggle: (Int) -> Unit,
     addTask: (String) -> Unit, removeTask: (Int) -> Unit,
-    onEdit: (String, String, String, String) -> Unit, delete: () -> Unit
+    onEdit: (String, String, String, String) -> Unit,
+    onAddPhoto: () -> Unit, onRemovePhoto: (String) -> Unit, delete: () -> Unit
 ) {
     var confirm by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
@@ -191,6 +232,14 @@ fun Detail(
                 )
                 TextButton(onClick = { addTask(newT); newT = "" }, enabled = newT.isNotBlank()) { Text("Añadir") }
             }
+        }
+        Section("Fotos") {
+            val ctx2 = LocalContext.current
+            n.images.forEach { name ->
+                NoteImage(ctx2, name)
+                TextButton(onClick = { onRemovePhoto(name) }) { Text("Quitar foto", color = RedErr) }
+            }
+            TextButton(onClick = onAddPhoto) { Text("📷 Añadir foto") }
         }
         if (!editing) Section("Transcripción") { Text(n.transcript, color = Muted) }
         TextButton(onClick = { confirm = true }) { Text("Eliminar nota", color = RedErr) }
@@ -291,7 +340,7 @@ fun AskScreen(
 }
 
 @Composable
-fun App(prefs: SharedPreferences) {
+fun App(prefs: SharedPreferences, shared: String?, onSharedUsed: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val notes = remember { mutableStateListOf<Note>().apply { addAll(Store.load(ctx)) } }
@@ -315,7 +364,18 @@ fun App(prefs: SharedPreferences) {
     var askLoading by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var showBackup by remember { mutableStateOf(false) }
+    var attachId by rememberSaveable { mutableStateOf<Long?>(null) }
     val askMsgs = remember { mutableStateListOf<Pair<Boolean, String>>() }
+
+    LaunchedEffect(shared) {
+        if (shared != null) {
+            showAsk = false
+            openId = null
+            textInput = shared
+            showText = true
+            onSharedUsed()
+        }
+    }
 
     BackHandler(enabled = openId != null) { openId = null }
 
@@ -455,6 +515,64 @@ fun App(prefs: SharedPreferences) {
         Store.save(ctx, notes)
     }
 
+    fun addImage(id: Long, name: String) {
+        val p = notes.indexOfFirst { it.id == id }
+        if (p < 0) return
+        notes[p] = notes[p].copy(images = notes[p].images + name)
+        Store.save(ctx, notes)
+    }
+
+    fun removeImage(id: Long, name: String) {
+        val p = notes.indexOfFirst { it.id == id }
+        if (p < 0) return
+        notes[p] = notes[p].copy(images = notes[p].images.filter { it != name })
+        Store.save(ctx, notes)
+        File(File(ctx.filesDir, "images"), name).delete()
+    }
+
+    fun processPhoto(uri: Uri) {
+        status = "Preparando la foto…"
+        error = ""
+        scope.launch {
+            val name = withContext(Dispatchers.IO) { saveImage(ctx, uri) }
+            if (name == null) {
+                status = ""
+                error = "No pude abrir esa imagen."
+                return@launch
+            }
+            val now = System.currentTimeMillis()
+            var note = Note(now, "Foto", "Foto sin texto leído.", "Fotos", "", emptyList(), now, listOf(name))
+            var fail: String? = null
+            var text = ""
+            try {
+                status = "Leyendo el texto de la imagen…"
+                text = withContext(Dispatchers.IO) {
+                    readImage(key, File(File(ctx.filesDir, "images"), name))
+                }.trim()
+            } catch (e: Exception) {
+                fail = e.message ?: "Error"
+            }
+            if (text.isNotBlank()) {
+                note = Note(now, "Foto", text.take(200), "Fotos", text, emptyList(), now, listOf(name))
+                try {
+                    status = "Organizando…"
+                    val cats = notes.map { it.category }.distinct()
+                    val o = withContext(Dispatchers.IO) { organize(key, text, cats) }
+                    note = Note(now, o.title, o.summary, o.category, text, o.tasks.map { Task(it, false) }, now, listOf(name))
+                } catch (e: Exception) {
+                    fail = e.message ?: "Error"
+                }
+            }
+            notes.add(0, note)
+            Store.save(ctx, notes)
+            status = ""
+            if (fail != null) {
+                Toast.makeText(ctx, "No pude leer todo el texto: " + fail + ". Guardé la foto igual.", Toast.LENGTH_LONG).show()
+            }
+            openId = note.id
+        }
+    }
+
     fun toggle(id: Long, idx: Int) {
         val p = notes.indexOfFirst { it.id == id }
         if (p < 0) return
@@ -543,6 +661,20 @@ fun App(prefs: SharedPreferences) {
         }
     }
 
+    val attachLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val id = attachId
+        if (uri != null && id != null) {
+            scope.launch {
+                val name = withContext(Dispatchers.IO) { saveImage(ctx, uri) }
+                if (name != null) addImage(id, name)
+                else Toast.makeText(ctx, "No pude abrir esa imagen.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val photoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) processPhoto(uri)
+    }
+
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) {
             try {
@@ -591,7 +723,10 @@ fun App(prefs: SharedPreferences) {
                 addTask = { addTask(current.id, it) },
                 removeTask = { idx -> removeTask(current.id, idx) },
                 onEdit = { t, c, sm, tx -> updateNote(current.id, t, c, sm, tx) },
+                onAddPhoto = { attachId = current.id; attachLauncher.launch("image/*") },
+                onRemovePhoto = { removeImage(current.id, it) },
                 delete = {
+                    current.images.forEach { File(File(ctx.filesDir, "images"), it).delete() }
                     notes.removeAll { it.id == current.id }
                     Store.save(ctx, notes)
                     openId = null
@@ -722,13 +857,20 @@ fun App(prefs: SharedPreferences) {
                     Spacer(Modifier.height(6.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(24.dp)
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         Box(
                             Modifier.size(52.dp).clip(CircleShape).background(ChipBg)
                                 .clickable(enabled = status.isEmpty() && !recording) { showText = true },
                             contentAlignment = Alignment.Center
                         ) { Text("✏️", fontSize = 22.sp) }
+                        Box(
+                            Modifier.size(52.dp).clip(CircleShape).background(ChipBg)
+                                .clickable(enabled = status.isEmpty() && !recording) {
+                                    if (key.isEmpty()) showKey = true else photoLauncher.launch("image/*")
+                                },
+                            contentAlignment = Alignment.Center
+                        ) { Text("📷", fontSize = 22.sp) }
                         Box(
                             Modifier.size(72.dp).clip(CircleShape)
                                 .background(if (recording) RedErr else Purple)
@@ -743,7 +885,7 @@ fun App(prefs: SharedPreferences) {
                             contentAlignment = Alignment.Center
                         ) { Text("💬", fontSize = 22.sp) }
                     }
-                    Text(if (recording) "Toca para terminar" else "Escribir   ·   Hablar   ·   Preguntar", color = Muted, fontSize = 12.sp)
+                    Text(if (recording) "Toca para terminar" else "Escribir · Foto · Hablar · Preguntar", color = Muted, fontSize = 12.sp)
                 }
             }
         }

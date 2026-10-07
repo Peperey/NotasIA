@@ -1,6 +1,12 @@
 package com.example.notasia
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
+import android.net.Uri
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -15,17 +21,19 @@ const val LLM_MODEL = "openai/gpt-oss-120b"
 data class Task(val text: String, val done: Boolean)
 data class Note(
     val id: Long, val title: String, val summary: String, val category: String,
-    val transcript: String, val tasks: List<Task>, val created: Long
+    val transcript: String, val tasks: List<Task>, val created: Long,
+    val images: List<String> = emptyList()
 )
 data class Organized(val title: String, val summary: String, val category: String, val tasks: List<String>)
 
 fun Note.toJson(): JSONObject = JSONObject()
     .put("id", id).put("title", title).put("summary", summary).put("category", category)
-    .put("transcript", transcript).put("created", created)
+    .put("transcript", transcript).put("created", created).put("images", JSONArray(images))
     .put("tasks", JSONArray(tasks.map { JSONObject().put("text", it.text).put("done", it.done) }))
 
 fun noteFrom(o: JSONObject): Note {
     val ts = o.optJSONArray("tasks") ?: JSONArray()
+    val im = o.optJSONArray("images") ?: JSONArray()
     return Note(
         o.getLong("id"), o.getString("title"), o.optString("summary"),
         o.optString("category", "General"), o.optString("transcript"),
@@ -33,7 +41,8 @@ fun noteFrom(o: JSONObject): Note {
             val t = ts.getJSONObject(it)
             Task(t.getString("text"), t.optBoolean("done"))
         },
-        o.optLong("created", o.getLong("id"))
+        o.optLong("created", o.getLong("id")),
+        (0 until im.length()).map { im.getString(it) }
     )
 }
 
@@ -182,4 +191,57 @@ fun notesToJson(notes: List<Note>): String = JSONArray(notes.map { it.toJson() }
 fun notesFromJson(text: String): List<Note> {
     val arr = JSONArray(text)
     return (0 until arr.length()).map { noteFrom(arr.getJSONObject(it)) }
+}
+
+// Modelo de visión de Groq. Si deja de funcionar, cambia este nombre (ver console.groq.com/docs/vision).
+const val VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+fun saveImage(ctx: Context, uri: Uri): String? {
+    return try {
+        val cr = ctx.contentResolver
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 2400) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        var bmp = cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
+        val rot = cr.openInputStream(uri)?.use {
+            when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+        } ?: 0f
+        if (rot != 0f) {
+            bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(rot) }, true)
+        }
+        val longest = maxOf(bmp.width, bmp.height)
+        if (longest > 1600) {
+            val k = 1600f / longest
+            bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * k).toInt(), (bmp.height * k).toInt(), true)
+        }
+        val dir = File(ctx.filesDir, "images")
+        dir.mkdirs()
+        val f = File(dir, "img_" + System.currentTimeMillis() + ".jpg")
+        f.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+        f.name
+    } catch (e: Exception) {
+        null
+    }
+}
+
+fun readImage(key: String, file: File): String {
+    val b64 = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+    val prompt = "Transcribe todo el texto visible en esta imagen, en su idioma original y respetando el orden. " +
+        "Si no hay texto, describe brevemente lo que se ve. Responde solo con el contenido, sin comentarios."
+    val content = JSONArray()
+        .put(JSONObject().put("type", "text").put("text", prompt))
+        .put(
+            JSONObject().put("type", "image_url")
+                .put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$b64"))
+        )
+    val body = JSONObject().put("model", VISION_MODEL).put("temperature", 0.1)
+        .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
+    return post(key, body)
 }
